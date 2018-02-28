@@ -1,61 +1,70 @@
+package transactionLib;
+
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import transactionLib.TXLibExceptions.AbortException;
+import transactionLib.TXLibExceptions.QueueIsEmptyException;
+
 public class Queue {
-    //	private static final long lockMask = 0x2000000000000000L;
-    private static final long singletonMask = 0x4000000000000000L;
-    //	private static final long versionMask = lockMask | singletonMask;
-    private static final long versionNegMask = singletonMask;
-    private LockQueue qLock = new LockQueue();
-    private QNode head;
-    private QNode tail;
-    private int size;
-    //	// bit 61 is lock
-    // bit 62 is singleton
-    // 0 is false, 1 is true
-    // we are missing a bit because this is signed
-    private AtomicLong versionAndFlags = new AtomicLong();
+	private LockQueue qLock = new LockQueue();
+	private QNode head;
+	private QNode tail;
+	private int size;
 
-    protected long getVersion() {
-        return (versionAndFlags.get() & (~versionNegMask));
-    }
+//	// bit 61 is lock
+	// bit 62 is singleton
+	// 0 is false, 1 is true
+	// we are missing a bit because this is signed 
+	private AtomicLong versionAndFlags = new AtomicLong();
+//	private static final long lockMask = 0x2000000000000000L;
+	private static final long singletonMask = 0x4000000000000000L;
+//	private static final long versionMask = lockMask | singletonMask;
+	private static final long versionNegMask = singletonMask;
 
-    protected void setVersion(long version) {
-        long l = versionAndFlags.get();
+	protected long getVersion() {
+		return (versionAndFlags.get() & (~versionNegMask));
+	}
+
+	protected void setVersion(long version) {
+		long l = versionAndFlags.get();
 //		assert ((l & lockMask) != 0);
-        l &= versionNegMask;
-        l |= (version & (~versionNegMask));
-        versionAndFlags.set(l);
-    }
+		l &= versionNegMask;
+		l |= (version & (~versionNegMask));
+		versionAndFlags.set(l);
+	}
 
-    protected boolean isSingleton() {
-        long l = versionAndFlags.get();
-        return (l & singletonMask) != 0;
-    }
+	protected boolean isSingleton() {
+		long l = versionAndFlags.get();
+		if ((l & singletonMask) == 0) {
+			return false;
+		}
+		return true;
+	}
 
-    protected void setSingleton(boolean value) {
-        long l = versionAndFlags.get();
+	protected void setSingleton(boolean value) {
+		long l = versionAndFlags.get();
 //		assert ((l & lockMask) != 0);
-        if (value) {
-            l |= singletonMask;
-            versionAndFlags.set(l);
-            return;
-        }
-        l &= (~singletonMask);
-        versionAndFlags.set(l);
-    }
-
-    private void lock() {
-        qLock.lock();
-    }
-
-    protected boolean tryLock() {
-        return qLock.tryLock();
-    }
-
-    protected void unlock() {
-        qLock.unlock();
-    }
+		if (value == true) {
+			l |= singletonMask;
+			versionAndFlags.set(l);
+			return;
+		}
+		l &= (~singletonMask);
+		versionAndFlags.set(l);
+	}
+	
+	private void lock(){
+		qLock.lock();
+	}
+	
+	protected boolean tryLock() {
+		return qLock.tryLock();
+	}
+	
+	protected void unlock() {
+		qLock.unlock();
+	}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // another implementation of queueLock:
@@ -154,289 +163,296 @@ public class Queue {
 //		}
 //	}
 
-    protected void enqueueNodes(LocalQueue lQueue) {
-        assert (lQueue != null);
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue enqueueNodes");
-        }
-        try {
-            while (!lQueue.isEmpty()) {
-                if (TX.DEBUG_MODE_QUEUE) {
-                    System.out.println("Queue enqueueNodes - lQueue is not empty");
-                }
-                QNode node = new QNode();
-                node.val = lQueue.dequeue();
-                if (TX.DEBUG_MODE_QUEUE) {
-                    System.out.println("Queue enqueueNodes - lQueue node val is " + node.val);
-                }
-                node.next = null;
-                node.prev = tail;
-                size++;
-                if (tail == null) {
-                    tail = node;
-                    head = node;
-                } else {
-                    tail.next = node;
-                    tail = node;
-                }
-            }
-        } catch (TXLibExceptions.QueueIsEmptyException e) {
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue enqueueNodes - local queue is empty");
-            }
-        }
+	protected void enqueueNodes(LocalQueue lQueue) {
+		assert (lQueue != null);
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue enqueueNodes");
+		}
+		try {
+			while (lQueue.isEmpty() != true) {
+				if (TX.DEBUG_MODE_QUEUE) {
+					System.out.println("Queue enqueueNodes - lQueue is not empty");
+				}
+				QNode node = new QNode();
+				node.val = lQueue.dequeue();
+				if (TX.DEBUG_MODE_QUEUE) {
+					System.out.println("Queue enqueueNodes - lQueue node val is " + node.val);
+				}
+				node.next = null;
+				node.prev = tail;
+				size++;
+				if (tail == null) {
+					tail = node;
+					head = node;
+				} else {
+					tail.next = node;
+					tail = node;
+				}
+			}
+		} catch (TXLibExceptions.QueueIsEmptyException e) {
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue enqueueNodes - local queue is empty");
+			}
+			return;
+		}
 
-    }
+	}
 
-    protected void dequeueNodes(QNode upToNode) {
+	protected void dequeueNodes(QNode upToNode) {
 
-        if (upToNode == null) {
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue dequeueNodes - upToNode is null");
-            }
-            return;
-        }
+		if (upToNode == null) {
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue dequeueNodes - upToNode is null");
+			}
+			return;
+		}
 
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue dequeueNodes");
-        }
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue dequeueNodes");
+		}
 
-        QNode curr = head;
-        while (curr != null && curr != upToNode.next) {
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue dequeueNodes - dequeueing");
-            }
-            size--;
-            curr = curr.next;
-        }
-        head = curr;
-        if (curr == null) {
-            tail = null;
-            assert (size == 0);
-        }
-    }
+		QNode curr = head;
+		while (curr != null && curr != upToNode.next) {
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue dequeueNodes - dequeueing");
+			}
+			size--;
+			curr = curr.next;
+		}
+		head = curr;
+		if (curr == null) {
+			tail = null;
+			assert (size == 0);
+		}
+	}
 
-    public void enqueue(Object val) throws TXLibExceptions.AbortException {
+	public void enqueue(Object val) throws AbortException {
+		
+		LocalStorage localStorage = TX.lStorage.get();
+		
+		// SINGLETON
+		if(localStorage.TX == false){
 
-        LocalStorage localStorage = TX.lStorage.get();
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue enqueue - singleton");
+			}
 
-        // SINGLETON
-        if (!localStorage.TX) {
+			QNode node = new QNode();
+			node.val = val;
+			node.next = null;
+			node.prev = tail;
 
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue enqueue - singleton");
-            }
+			lock();
+			size++;
+			if (tail == null) {
+				tail = node;
+				head = node;
 
-            QNode node = new QNode();
-            node.val = val;
-            node.next = null;
-            node.prev = tail;
+			} else {
+				tail.next = node;
+				tail = node;
+			}
 
-            lock();
-            size++;
-            if (tail == null) {
-                tail = node;
-                head = node;
+			setVersion(TX.getVersion());
+			setSingleton(true);
 
-            } else {
-                tail.next = node;
-                tail = node;
-            }
+			unlock();
+			return;
+		}
 
-            setVersion(TX.getVersion());
-            setSingleton(true);
+		// TX
 
-            unlock();
-            return;
-        }
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue enqueue - in TX");
+		}
 
-        // TX
+		if (localStorage.readVersion < getVersion()) {
+				localStorage.TX = false;
+				TXLibExceptions excep = new TXLibExceptions();
+				throw excep.new AbortException();
+			}
+		if ((localStorage.readVersion == getVersion()) && (isSingleton() == true)) {
+			TX.incrementAndGetVersion();
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
+		}
+		
+		HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
+		LocalQueue lQueue = qMap.get(this);
+		if (lQueue == null) {
+			lQueue = new LocalQueue();
+		}
+		lQueue.enqueue(val);
+		qMap.put(this, lQueue);
+		
+	}
 
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue enqueue - in TX");
-        }
+	public Object dequeue() throws QueueIsEmptyException, AbortException {
+		
+		LocalStorage localStorage = TX.lStorage.get();
+		
+		// SINGLETON
+		if(localStorage.TX == false){
 
-        if (localStorage.readVersion < getVersion()) {
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
-        if ((localStorage.readVersion == getVersion()) && (isSingleton())) {
-            TX.incrementAndGetVersion();
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue dequeue - singleton");
+			}
 
-        HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
-        LocalQueue lQueue = qMap.get(this);
-        if (lQueue == null) {
-            lQueue = new LocalQueue();
-        }
-        lQueue.enqueue(val);
-        qMap.put(this, lQueue);
+			lock(); 
+			if (head == null) {
+				unlock();
+				TXLibExceptions excep = new TXLibExceptions();
+				throw excep.new QueueIsEmptyException();
+			}
+			QNode temp = head;
+			Object ret = temp.val;
+			head = head.next;
+			if (head == null) {
+				tail = null;
+			} else {
+				head.prev = null;
+			}
+			size--;
+			setVersion(TX.getVersion());
+			setSingleton(true);
+			unlock();
+			return ret;
 
-    }
+		}
 
-    public Object dequeue() throws TXLibExceptions.QueueIsEmptyException, TXLibExceptions.AbortException {
+		// TX
 
-        LocalStorage localStorage = TX.lStorage.get();
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue dequeue - in TX");
+		}
+		
+		if (localStorage.readVersion < getVersion()) {
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
+		}
+		if ((localStorage.readVersion == getVersion()) && (isSingleton() == true)) {
+			TX.incrementAndGetVersion();
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
+		}
 
-        // SINGLETON
-        if (!localStorage.TX) {
+		if (!tryLock()) { // if queue is locked by another thread
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
 
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue dequeue - singleton");
-            }
+		}
 
-            lock();
-            if (head == null) {
-                unlock();
-                TXLibExceptions excep = new TXLibExceptions();
-                throw excep.new QueueIsEmptyException();
-            }
-            QNode temp = head;
-            Object ret = temp.val;
-            head = head.next;
-            if (head == null) {
-                tail = null;
-            } else {
-                head.prev = null;
-            }
-            size--;
-            setVersion(TX.getVersion());
-            setSingleton(true);
-            unlock();
-            return ret;
+		// now we have the lock
+		HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
+		LocalQueue lQueue = qMap.get(this);
+		if (lQueue == null) {
+			lQueue = new LocalQueue();
+		}
 
-        }
+		if (lQueue.firstDeq) {
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue dequeue - first dequeue");
+			}
+			// if this is the first dequeue then try to dequeue the tail
+			lQueue.firstDeq = false;
+			lQueue.nodeToDeq = head;
+		} else if (lQueue.nodeToDeq != null) {
+			lQueue.nodeToDeq = lQueue.nodeToDeq.next;
+		}
 
-        // TX
+		if (lQueue.nodeToDeq != null) { // dequeue from the queue
 
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue dequeue - in TX");
-        }
+			Object ret = lQueue.nodeToDeq.val;
+			qMap.put(this, lQueue);
 
-        if (localStorage.readVersion < getVersion()) {
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
-        if ((localStorage.readVersion == getVersion()) && (isSingleton())) {
-            TX.incrementAndGetVersion();
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
+			return ret;
+		}
 
-        if (!tryLock()) { // if queue is locked by another thread
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue dequeue - nodeToDeq is null");
+		}
 
-        }
+		// there is no node in queue, then try the localQueue
+		qMap.put(this, lQueue);
+		Object ret = lQueue.dequeue(); // this could throw an exception
+		qMap.put(this, lQueue);
+		
+		return ret;
 
-        // now we have the lock
-        HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
-        LocalQueue lQueue = qMap.get(this);
-        if (lQueue == null) {
-            lQueue = new LocalQueue();
-        }
+	}
 
-        if (lQueue.firstDeq) {
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue dequeue - first dequeue");
-            }
-            // if this is the first dequeue then try to dequeue the tail
-            lQueue.firstDeq = false;
-            lQueue.nodeToDeq = head;
-        } else if (lQueue.nodeToDeq != null) {
-            lQueue.nodeToDeq = lQueue.nodeToDeq.next;
-        }
+	public boolean isEmpty() throws AbortException {
+		
+		LocalStorage localStorage = TX.lStorage.get();
 
-        if (lQueue.nodeToDeq != null) { // dequeue from the queue
+		// SINGLETON
+		if(localStorage.TX == false){
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue isEmpty - singleton");
+			}
+			int ret = size;
+			lock();
+			setVersion(TX.getVersion());
+			setSingleton(true);
+			unlock();
+			return ((ret > 0) ? false : true);
+		}
 
-            Object ret = lQueue.nodeToDeq.val;
-            qMap.put(this, lQueue);
+		// TX
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue isEmpty - in TX");
+		}
 
-            return ret;
-        }
+		if (TX.DEBUG_MODE_QUEUE) {
+			System.out.println("Queue isEmpty - now not locked by me");
+		}
 
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue dequeue - nodeToDeq is null");
-        }
+		if (localStorage.readVersion < getVersion()) {
+				localStorage.TX = false;
+				TXLibExceptions excep = new TXLibExceptions();
+				throw excep.new AbortException();
+			}
+		if ((localStorage.readVersion == getVersion()) && (isSingleton() == true)) {
+			TX.incrementAndGetVersion();
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
+		}
+		
+		if (!tryLock()) { // if queue is locked by another thread
 
-        // there is no node in queue, then try the localQueue
-        qMap.put(this, lQueue);
-        return lQueue.dequeue(); // can throw an exception
+			if (TX.DEBUG_MODE_QUEUE) {
+				System.out.println("Queue isEmpty - couldn't lock");
+			}
 
-    }
+			localStorage.TX = false;
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
 
-    public boolean isEmpty() throws TXLibExceptions.AbortException {
+		}
 
-        LocalStorage localStorage = TX.lStorage.get();
+		// now we have the lock
+		if (size > 0) {
+			return false;
+		}
 
-        // SINGLETON
-        if (!localStorage.TX) {
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue isEmpty - singleton");
-            }
-            int ret = size;
-            lock();
-            setVersion(TX.getVersion());
-            setSingleton(true);
-            unlock();
-            return (ret <= 0);
-        }
+		// check lQueue
+		HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
+		LocalQueue lQueue = qMap.get(this);
+		if (lQueue == null) {
+			lQueue = new LocalQueue();
+		}
+		qMap.put(this, lQueue);
 
-        // TX
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue isEmpty - in TX");
-        }
+		if (lQueue.isEmpty()) {
+			return true;
+		}
 
-        if (TX.DEBUG_MODE_QUEUE) {
-            System.out.println("Queue isEmpty - now not locked by me");
-        }
-
-        if (localStorage.readVersion < getVersion()) {
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
-        if ((localStorage.readVersion == getVersion()) && (isSingleton())) {
-            TX.incrementAndGetVersion();
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
-
-        if (!tryLock()) { // if queue is locked by another thread
-
-            if (TX.DEBUG_MODE_QUEUE) {
-                System.out.println("Queue isEmpty - couldn't lock");
-            }
-
-            localStorage.TX = false;
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-
-        }
-
-        // now we have the lock
-        if (size > 0) {
-            return false;
-        }
-
-        // check lQueue
-        HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
-        LocalQueue lQueue = qMap.get(this);
-        if (lQueue == null) {
-            lQueue = new LocalQueue();
-        }
-        qMap.put(this, lQueue);
-
-        return lQueue.isEmpty();
-
-    }
+		return false;
+	}
 
 }

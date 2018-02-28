@@ -1,248 +1,257 @@
+package transactionLib;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map.Entry;
 import java.util.concurrent.atomic.AtomicLong;
 
+import transactionLib.TXLibExceptions.AbortException;
+
 public class TX {
 
-    public static final boolean DEBUG_MODE_LL = false;
-    public static final boolean DEBUG_MODE_QUEUE = false;
-    private static final boolean DEBUG_MODE_TX = false;
-    private static final boolean DEBUG_MODE_VERSION = false;
+	public static final boolean DEBUG_MODE_LL = false;
+	public static final boolean DEBUG_MODE_QUEUE = false;
+	public static final boolean DEBUG_MODE_TX = false;
+	public static final boolean DEBUG_MODE_VERSION = false;
+	
+	protected static ThreadLocal<LocalStorage> lStorage = new ThreadLocal<LocalStorage>() {
+		@Override
+		protected LocalStorage initialValue() {
+			return new LocalStorage();
+		}
+	};
 
-    protected static ThreadLocal<LocalStorage> lStorage = ThreadLocal.withInitial(LocalStorage::new);
+	private static AtomicLong GVC = new AtomicLong();
 
-    private static AtomicLong GVC = new AtomicLong();
+	protected static long getVersion() {
+		return GVC.get(); 
+	}
 
-    protected static long getVersion() {
-        return GVC.get();
-    }
+	protected static long incrementAndGetVersion() {
+		return GVC.incrementAndGet();
+	}
 
-    protected static long incrementAndGetVersion() {
-        return GVC.incrementAndGet();
-    }
+	public static void TXbegin() {	
 
-    public static void TXbegin() {
+		if (DEBUG_MODE_TX) {
+			System.out.println("TXbegin");
+		}
+		
+		LocalStorage localStorage = lStorage.get();
+		localStorage.TX = true;
+		localStorage.readVersion = getVersion();
+	}
 
-        if (DEBUG_MODE_TX) {
-            System.out.println("TXbegin");
-        }
+	public static boolean TXend() throws AbortException {
 
-        LocalStorage localStorage = lStorage.get();
-        localStorage.TX = true;
-        localStorage.readVersion = getVersion();
-    }
+		if (DEBUG_MODE_TX) {
+			System.out.println("TXend");
+		}
 
-    public static boolean TXend() throws TXLibExceptions.AbortException {
+		boolean abort = false;
+		
+		LocalStorage localStorage = lStorage.get();
+		
+		if(localStorage.TX == false){
+			if (DEBUG_MODE_TX) {
+				System.out.println("TXend - abort the TX");
+			}
+			abort = true;
+		}
 
-        if (DEBUG_MODE_TX) {
-            System.out.println("TXend");
-        }
+		// locking write set
+		
+		HashMap<LNode, WriteElement> writeSet = localStorage.writeSet;
 
-        boolean abort = false;
+		HashSet<LNode> lockedLNodes = new HashSet<LNode>();
 
-        LocalStorage localStorage = lStorage.get();
+		if (!abort) {
 
-        if (!localStorage.TX) {
-            if (DEBUG_MODE_TX) {
-                System.out.println("TXend - abort the TX");
-            }
-            abort = true;
-        }
+			for (Entry<LNode, WriteElement> entry : writeSet.entrySet()) {
+				LNode node = entry.getKey();
+				if (!node.tryLock()) {
+					abort = true;
+					break;
+				}
+				lockedLNodes.add(node);
+			}
 
-        // locking write set
+		}
+		// locking queues
+		HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
 
-        HashMap<LNode, WriteElement> writeSet = localStorage.writeSet;
+		if (!abort) {
 
-        HashSet<LNode> lockedLNodes = new HashSet<>();
+			for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
 
-        if (!abort) {
+				Queue queue = entry.getKey();
 
-            for (Entry<LNode, WriteElement> entry : writeSet.entrySet()) {
-                LNode node = entry.getKey();
-                if (!node.tryLock()) {
-                    abort = true;
-                    break;
-                }
-                lockedLNodes.add(node);
-            }
+				if (!queue.tryLock()) { // if queue is locked by another thread
+					abort = true;
+					break;
 
-        }
-        // locking queues
-        HashMap<Queue, LocalQueue> qMap = localStorage.queueMap;
+				}
 
-        if (!abort) {
+				LocalQueue lQueue = entry.getValue();
+				lQueue.isLockedByMe = true;
 
-            for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
+			}
+		}
 
-                Queue queue = entry.getKey();
+		// validate read set
 
-                if (!queue.tryLock()) { // if queue is locked by another thread
-                    abort = true;
-                    break;
+		HashSet<LNode> readSet = localStorage.readSet;
 
-                }
+		if (!abort) {
 
-                LocalQueue lQueue = entry.getValue();
-                lQueue.isLockedByMe = true;
+			for (LNode node : readSet) {
+				if (!lockedLNodes.contains(node) && node.isLocked()) {
+					// someone else holds the lock
+					abort = true;
+					break;
+				} else if (node.getVersion() > localStorage.readVersion) {
+					abort = true;
+					break;
+				} else if (node.getVersion() == localStorage.readVersion && node.isSingleton() == true){
+					incrementAndGetVersion(); // increment GVC
+					node.setSingleton(false);
+					if(DEBUG_MODE_VERSION){
+						System.out.println("singleton - increment GVC");
+					}
+					abort = true;
+					break;
+				}
 
-            }
-        }
+			}
 
-        // validate read set
+		}
+		
+		// validate queue
+		
+		if (!abort) {
+			
+			for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
 
-        HashSet<LNode> readSet = localStorage.readSet;
+				Queue queue = entry.getKey();
+				if (queue.getVersion() > localStorage.readVersion) { 
+					abort = true;
+					break;
+				} else if(queue.getVersion() == localStorage.readVersion && queue.isSingleton() == true){
+					incrementAndGetVersion(); // increment GVC
+					abort = true;
+					break;
+				}
 
-        if (!abort) {
+			}
+			
+		}
+		
+		// increment GVC
 
-            for (LNode node : readSet) {
-                if (!lockedLNodes.contains(node) && node.isLocked()) {
-                    // someone else holds the lock
-                    abort = true;
-                    break;
-                } else if (node.getVersion() > localStorage.readVersion) {
-                    abort = true;
-                    break;
-                } else if (node.getVersion() == localStorage.readVersion && node.isSingleton()) {
-                    incrementAndGetVersion(); // increment GVC
-                    node.setSingleton(false);
-                    if (DEBUG_MODE_VERSION) {
-                        System.out.println("singleton - increment GVC");
-                    }
-                    abort = true;
-                    break;
-                }
+		long writeVersion = 0;
+		
+		if (!abort && !localStorage.readOnly) {
+			writeVersion = incrementAndGetVersion();
+			assert (writeVersion > localStorage.readVersion);
+			localStorage.writeVersion = writeVersion;
+		}
+		
+		// commit
+		if (!abort && !localStorage.readOnly) {
+			// LinkedList
 
-            }
+			for (Entry<LNode, WriteElement> entry : writeSet.entrySet()) {
+				LNode node = entry.getKey();
+				WriteElement we = entry.getValue();
 
-        }
+				node.next = we.next;
+				node.val = we.val; // when node val changed because of put
+				if (we.deleted) {
+					node.setDeleted(true);
+					node.val = null; // for index
+				}
+				node.setVersion(writeVersion);
+				node.setSingleton(false);
+			}
+		}
 
-        // validate queue
+		if (!abort) {
+			// Queue
 
-        if (!abort) {
+			for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
 
-            for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
+				Queue queue = entry.getKey();
+				LocalQueue lQueue = entry.getValue();
 
-                Queue queue = entry.getKey();
-                if (queue.getVersion() > localStorage.readVersion) {
-                    abort = true;
-                    break;
-                } else if (queue.getVersion() == localStorage.readVersion && queue.isSingleton()) {
-                    incrementAndGetVersion(); // increment GVC
-                    abort = true;
-                    break;
-                }
+				queue.dequeueNodes(lQueue.nodeToDeq);
+				queue.enqueueNodes(lQueue);
+				if(TX.DEBUG_MODE_QUEUE){
+					System.out.println("commit queue before set version");
+				}
+				queue.setVersion(writeVersion);
+				queue.setSingleton(false);
+				
+			}
 
-            }
+		}
 
-        }
+		// release locks, even if abort
 
-        // increment GVC
+		lockedLNodes.forEach(locked -> locked.unlock());
 
-        long writeVersion = 0;
+		for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
 
-        if (!abort && !localStorage.readOnly) {
-            writeVersion = incrementAndGetVersion();
-            assert (writeVersion > localStorage.readVersion);
-            localStorage.writeVersion = writeVersion;
-        }
+			Queue queue = entry.getKey();
+			LocalQueue lQueue = entry.getValue();
+			if (lQueue.isLockedByMe) {
+				queue.unlock();
+				lQueue.isLockedByMe = false;
+			}
+		}
 
-        // commit
-        if (!abort && !localStorage.readOnly) {
-            // LinkedList
+		// update index
+		if (!abort && !localStorage.readOnly) {
+			// adding to index
+			HashMap<LinkedList, ArrayList<LNode>> indexMap = localStorage.indexAdd;
+			for (Entry<LinkedList, ArrayList<LNode>> entry : indexMap.entrySet()) {
+				LinkedList list = entry.getKey();
+				ArrayList<LNode> nodes = entry.getValue();
+				nodes.forEach(node -> list.index.add(node));
+			}
+			// removing from index
+			indexMap = localStorage.indexRemove;
+			for (Entry<LinkedList, ArrayList<LNode>> entry : indexMap.entrySet()) {
+				LinkedList list = entry.getKey();
+				ArrayList<LNode> nodes = entry.getValue();
+				nodes.forEach(node -> list.index.remove(node));
+			}
+		}
 
-            for (Entry<LNode, WriteElement> entry : writeSet.entrySet()) {
-                LNode node = entry.getKey();
-                WriteElement we = entry.getValue();
+		// cleanup
 
-                node.next = we.next;
-                node.val = we.val; // when node val changed because of put
-                if (we.deleted) {
-                    node.setDeleted(true);
-                    node.val = null; // for index
-                }
-                node.setVersion(writeVersion);
-                node.setSingleton(false);
-            }
-        }
+		localStorage.queueMap.clear();
+		localStorage.writeSet.clear();
+		localStorage.readSet.clear();
+		localStorage.indexAdd.clear();
+		localStorage.indexRemove.clear();
+		localStorage.TX = false;
+		localStorage.readOnly = true;
 
-        if (!abort) {
-            // Queue
+		if (DEBUG_MODE_TX) {
+			if(abort){
+				System.out.println("TXend - aborted");
+			}
+			System.out.println("TXend - is done");
+		}
+		
+		if(abort){
+			TXLibExceptions excep = new TXLibExceptions();
+			throw excep.new AbortException();
+		}
+		
+		return (!abort);
 
-            for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
-
-                Queue queue = entry.getKey();
-                LocalQueue lQueue = entry.getValue();
-
-                queue.dequeueNodes(lQueue.nodeToDeq);
-                queue.enqueueNodes(lQueue);
-                if (TX.DEBUG_MODE_QUEUE) {
-                    System.out.println("commit queue before set version");
-                }
-                queue.setVersion(writeVersion);
-                queue.setSingleton(false);
-
-            }
-
-        }
-
-        // release locks, even if abort
-
-        lockedLNodes.forEach(LNode::unlock);
-
-        for (Entry<Queue, LocalQueue> entry : qMap.entrySet()) {
-
-            Queue queue = entry.getKey();
-            LocalQueue lQueue = entry.getValue();
-            if (lQueue.isLockedByMe) {
-                queue.unlock();
-                lQueue.isLockedByMe = false;
-            }
-        }
-
-        // update index
-        if (!abort && !localStorage.readOnly) {
-            // adding to index
-            HashMap<LinkedList, ArrayList<LNode>> indexMap = localStorage.indexAdd;
-            for (Entry<LinkedList, ArrayList<LNode>> entry : indexMap.entrySet()) {
-                LinkedList list = entry.getKey();
-                ArrayList<LNode> nodes = entry.getValue();
-                nodes.forEach(node -> list.index.add(node));
-            }
-            // removing from index
-            indexMap = localStorage.indexRemove;
-            for (Entry<LinkedList, ArrayList<LNode>> entry : indexMap.entrySet()) {
-                LinkedList list = entry.getKey();
-                ArrayList<LNode> nodes = entry.getValue();
-                nodes.forEach(node -> list.index.remove(node));
-            }
-        }
-
-        // cleanup
-
-        localStorage.queueMap.clear();
-        localStorage.writeSet.clear();
-        localStorage.readSet.clear();
-        localStorage.indexAdd.clear();
-        localStorage.indexRemove.clear();
-        localStorage.TX = false;
-        localStorage.readOnly = true;
-
-        if (DEBUG_MODE_TX) {
-            if (abort) {
-                System.out.println("TXend - aborted");
-            }
-            System.out.println("TXend - is done");
-        }
-
-        if (abort) {
-            TXLibExceptions excep = new TXLibExceptions();
-            throw excep.new AbortException();
-        }
-
-        return true;
-
-    }
+	}
 
 }
